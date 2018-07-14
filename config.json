@@ -1,0 +1,28 @@
+{
+  "Servers": {
+    "s12": {
+      "URL": "https://s12.suki.moe"
+    },
+    "s11": {
+      "URL": "https://s11.suki.moe:8049"
+    },
+    "s13": {
+      "URL": "https://s13.suki.moe"
+    }
+  },
+  "Groups": {
+    "main": {
+      "Type": "random",
+      "Servers": {
+        "s12": 1.0,
+        "s11": 1.0
+      }
+    },
+    "日本": {
+      "Type": "random",
+      "Servers": {
+        "s13": 1.0
+      }
+    }
+  }
+}
