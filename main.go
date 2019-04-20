@@ -1,18 +1,20 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
-	"encoding/json"
+	"strconv"
+
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
-	"strconv"
-	"errors"
-	"fmt"
 )
 
 var gm *groupManager
+var verboseMode bool
 
 func handler(c echo.Context) error {
 	var group balanceGroup
@@ -30,6 +32,14 @@ func handler(c echo.Context) error {
 	if server == nil {
 		return errors.New("no server found")
 	}
+	if verboseMode {
+		cookie, err := c.Cookie("Group")
+		if cookie == nil || err != nil {
+			log.Printf("Request from [%s] to [%s] has been redirect to [%s]\n", c.RealIP(), c.Request().URL, server.Name)
+		} else {
+			log.Printf("Request from [%s] to [%s] with cookie [%s] has been redirect to [%s]\n", c.RealIP(), c.Request().URL, cookie.Value, server.Name)
+		}
+	}
 	c.Redirect(server.RedirectType, fmt.Sprintf("%s%s", server.URL, c.Request().URL))
 	return nil
 }
@@ -38,7 +48,9 @@ func main() {
 	path := flag.String("c", "./config.json", "Config Path.")
 	ipData := flag.String("d", "./data.ipx", "Ipp.net database.")
 	port := flag.Int("p", 1080, "Listen Port.")
+	verbose := flag.Bool("verbose", false, "Verbose mode.")
 	flag.Parse()
+	verboseMode = *verbose
 	data, err := ioutil.ReadFile(*path)
 	if err != nil {
 		log.Fatal(err)

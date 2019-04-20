@@ -60,12 +60,15 @@ func (s *server) watch() {
 		resp, err := http.Get(s.URL + "/generate_204")
 		if err != nil || resp.StatusCode != http.StatusNoContent {
 			if s.Offline == false {
-				log.Printf("[%s] Offline.", s.Name)
+				if err != nil {
+					log.Println(err)
+				}
+				log.Printf("[%s] Offline.\n", s.Name)
 			}
 			s.Offline = true
 		} else {
 			if s.Offline == true {
-				log.Printf("[%s] back to Online.", s.Name)
+				log.Printf("[%s] back to Online.\n", s.Name)
 			}
 			s.Offline = false
 		}
