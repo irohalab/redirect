@@ -1,14 +1,15 @@
 package main
 
 import (
-	"sync"
-	"math/rand"
-	"sort"
 	"log"
-	"time"
+	"math/rand"
 	"net/http"
-	"github.com/labstack/echo"
+	"sort"
+	"sync"
+	"time"
+
 	"github.com/ipipdotnet/datx-go"
+	"github.com/labstack/echo"
 )
 
 type balanceGroup interface {
@@ -21,6 +22,7 @@ type server struct {
 	URL          string
 	RedirectType int
 	Offline      bool
+	Check        bool
 }
 
 func (s *server) init(input interface{}) *server {
@@ -39,11 +41,20 @@ func (s *server) init(input interface{}) *server {
 			s.RedirectType = v
 		}
 	}
+	s.Check = true
+	if t, ok := data["NoCheck"]; ok {
+		if v, ok := t.(bool); ok {
+			s.Check = !v
+		}
+	}
 	log.Printf("Regist server %s success.\n", s.Name)
 	return s
 }
 
 func (s *server) watch() {
+	if !s.Check {
+		return
+	}
 	for {
 		time.Sleep(10 * time.Second)
 		resp, err := http.Get(s.URL + "/generate_204")
