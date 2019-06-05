@@ -44,6 +44,19 @@ func handler(c echo.Context) error {
 	return nil
 }
 
+func status(c echo.Context) error {
+	serverStatus := make([]interface{}, 0)
+	for _, v := range gm.servers {
+		serverStatus = append(serverStatus, v.getStatus())
+	}
+	data, err := json.Marshal(serverStatus)
+	if err != nil {
+		return err
+	}
+	c.String(200, string(data))
+	return nil
+}
+
 func main() {
 	path := flag.String("c", "./config.json", "Config Path.")
 	ipData := flag.String("d", "./data.ipx", "Ipp.net database.")
@@ -66,5 +79,6 @@ func main() {
 	e.Use(middleware.Recover())
 
 	e.GET("/*", handler)
+	e.POST("/*", status)
 	e.Logger.Fatal(e.Start(":" + strconv.Itoa(*port)))
 }

@@ -14,6 +14,7 @@ import (
 
 type balanceGroup interface {
 	getServer() *server
+	getStatus() interface{}
 	watch()
 }
 
@@ -23,6 +24,8 @@ type server struct {
 	RedirectType int
 	Offline      bool
 	Check        bool
+	LastOnline   time.Time
+	Count        int64
 }
 
 func (s *server) init(input interface{}) *server {
@@ -71,6 +74,7 @@ func (s *server) watch() {
 				log.Printf("[%s] back to Online.\n", s.Name)
 			}
 			s.Offline = false
+			s.LastOnline = time.Now()
 		}
 	}
 }
@@ -79,7 +83,12 @@ func (s *server) getServer() *server {
 	if s.Offline {
 		return nil
 	}
+	s.Count++
 	return s
+}
+
+func (s *server) getStatus() interface{} {
+	return *s
 }
 
 type serverWithWeight struct {
@@ -169,11 +178,26 @@ func (s *group) getServer() *server {
 				}
 			}
 		}
+		return s.Servers[s.sortedWeight[0].Name].getServer()
 	}
 	return nil
 }
 
 func (s *group) watch() {}
+
+func (s *group) getStatus() interface{} {
+	server := make([]string, 0)
+	for k := range s.Servers {
+		server = append(server, k)
+	}
+	return map[string]interface{}{
+		"Name":         s.Name,
+		"Type":         s.Type,
+		"Servers":      server,
+		"TotalWeight":  s.TotalWeight,
+		"SortedWeight": s.sortedWeight,
+	}
+}
 
 type groupManager struct {
 	serverInput      map[string]interface{}
