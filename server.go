@@ -60,7 +60,9 @@ func (s *server) watch() {
 	}
 	for {
 		time.Sleep(10 * time.Second)
-		resp, err := http.Get(s.URL + "/generate_204")
+		req, err := http.NewRequest(http.MethodGet, s.URL+"/generate_204", nil)
+		req.Header.Set("Connection", "close")
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil || resp.StatusCode != http.StatusNoContent {
 			if s.Offline == false {
 				if err != nil {
