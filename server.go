@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"math/rand"
 	"net/http"
@@ -28,55 +29,37 @@ type server struct {
 	Count        int64
 }
 
-func (s *server) init(input interface{}) *server {
-	data, ok := input.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	if t, ok := data["URL"]; ok {
-		if v, ok := t.(string); ok {
-			s.URL = v
-		}
-	}
-	s.RedirectType = 307
-	if t, ok := data["RedirectType"]; ok {
-		if v, ok := t.(int); ok {
-			s.RedirectType = v
-		}
-	}
+func (s *server) init(name string, config []byte) *server {
+	s.Name = name
 	s.Check = true
-	if t, ok := data["NoCheck"]; ok {
-		if v, ok := t.(bool); ok {
-			s.Check = !v
-		}
+	if err := json.Unmarshal(config, s); err != nil {
+		log.Fatalf("init server %s failed, err: %s, config: %s\n", name, err.Error(), config)
 	}
 	log.Printf("Regist server %s success.\n", s.Name)
 	return s
 }
 
 func (s *server) watch() {
-	if !s.Check {
-		return
-	}
-	for {
-		time.Sleep(10 * time.Second)
-		req, err := http.NewRequest(http.MethodGet, s.URL+"/generate_204", nil)
-		req.Header.Set("Connection", "close")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil || resp.StatusCode != http.StatusNoContent {
-			if s.Offline == false {
-				if err != nil {
-					log.Println(err)
+	if s.Check {
+		for {
+			time.Sleep(10 * time.Second)
+			req, _ := http.NewRequest(http.MethodGet, s.URL+"/generate_204", nil)
+			req.Header.Set("Connection", "close")
+			if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusNoContent {
+				if s.Offline == false {
+					if err != nil {
+						log.Println(err)
+					}
+					log.Printf("[%s] Offline.\n", s.Name)
 				}
-				log.Printf("[%s] Offline.\n", s.Name)
+				s.Offline = true
+			} else {
+				if s.Offline == true {
+					log.Printf("[%s] back to Online.\n", s.Name)
+				}
+				s.Offline = false
+				s.LastOnline = time.Now()
 			}
-			s.Offline = true
-		} else {
-			if s.Offline == true {
-				log.Printf("[%s] back to Online.\n", s.Name)
-			}
-			s.Offline = false
-			s.LastOnline = time.Now()
 		}
 	}
 }
@@ -101,38 +84,23 @@ type serverWithWeight struct {
 type group struct {
 	Name         string
 	Type         string
-	Servers      map[string]balanceGroup
+	Servers      map[string]float64
+	servers      map[string]balanceGroup
 	sortedWeight []serverWithWeight
-	TotalWeight  float64
+	totalWeight  float64
 	mutex        sync.Mutex
 }
 
-func (s *group) init(input interface{}) *group {
-	data, ok := input.(map[string]interface{})
-	if !ok {
-		return nil
-	}
+func (s *group) init(name string, config []byte) *group {
+	s.Name = name
 	s.Type = "fallback"
-	if t, ok := data["Type"]; ok {
-		if v, ok := t.(string); ok {
-			s.Type = v
-		}
+	if err := json.Unmarshal(config, s); err != nil {
+		log.Fatalf("init group %s failed, err: %s, config: %s\n", name, err.Error(), config)
 	}
 	s.sortedWeight = make([]serverWithWeight, 0)
-	s.Servers = make(map[string]balanceGroup)
-	if t, ok := data["Servers"]; ok {
-		if v, ok := t.(map[string]interface{}); ok {
-			for kk, vv := range v {
-				var weight float64
-				switch vv.(type) {
-				case int:
-					weight = float64(vv.(int))
-				case float64:
-					weight = vv.(float64)
-				}
-				s.sortedWeight = append(s.sortedWeight, serverWithWeight{kk, weight})
-			}
-		}
+	s.servers = make(map[string]balanceGroup)
+	for k, v := range s.Servers {
+		s.sortedWeight = append(s.sortedWeight, serverWithWeight{k, v})
 	}
 	sort.Slice(s.sortedWeight, func(i, j int) bool { return s.sortedWeight[i].Weight > s.sortedWeight[j].Weight })
 	log.Printf("Regist group %s success. \n", s.Name)
@@ -141,32 +109,29 @@ func (s *group) init(input interface{}) *group {
 
 func (s *group) constructGroup(m *groupManager) {
 	for _, v := range s.sortedWeight {
-		server := m.get(v.Name)
-		if server == nil {
+		if server := m.get(v.Name); server != nil {
+			s.servers[v.Name] = server
+		} else {
 			log.Fatalf("Construct error. %s not found", v.Name)
 		}
-		s.Servers[v.Name] = server
 	}
-
 }
+
 func (s *group) getServer() *server {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	switch s.Type {
 	case "fallback":
 		for _, v := range s.sortedWeight {
-			t, ok := s.Servers[v.Name]
-			if !ok {
-				continue
-			}
-			server := t.getServer()
-			if server != nil {
-				return server
+			if t, ok := s.servers[v.Name]; ok {
+				if server := t.getServer(); server != nil {
+					return server
+				}
 			}
 		}
 		return nil
 	case "random":
-		if len(s.Servers) <= 0 {
+		if len(s.servers) <= 0 {
 			return nil
 		}
 		maxWeight := s.sortedWeight[0].Weight
@@ -174,13 +139,12 @@ func (s *group) getServer() *server {
 			i := rand.Intn(len(s.Servers))
 			t := s.sortedWeight[i]
 			if rand.Float64()*maxWeight < t.Weight {
-				server := s.Servers[t.Name].getServer()
-				if server != nil {
+				if server := s.servers[t.Name].getServer(); server != nil {
 					return server
 				}
 			}
 		}
-		return s.Servers[s.sortedWeight[0].Name].getServer()
+		return s.servers[s.sortedWeight[0].Name].getServer()
 	}
 	return nil
 }
@@ -189,48 +153,44 @@ func (s *group) watch() {}
 
 func (s *group) getStatus() interface{} {
 	server := make([]string, 0)
-	for k := range s.Servers {
+	for k := range s.servers {
 		server = append(server, k)
 	}
 	return map[string]interface{}{
 		"Name":         s.Name,
 		"Type":         s.Type,
 		"Servers":      server,
-		"TotalWeight":  s.TotalWeight,
+		"TotalWeight":  s.totalWeight,
 		"SortedWeight": s.sortedWeight,
 	}
 }
 
 type groupManager struct {
-	serverInput      map[string]interface{}
-	groupInput       map[string]interface{}
+	Servers          map[string]json.RawMessage
+	Groups           map[string]json.RawMessage
 	servers          map[string]balanceGroup
 	ipipDataFilePath string
+	RedirectType     int
 	city             *datx.City
 }
 
-func (s *groupManager) init(input interface{}) *groupManager {
+func (s *groupManager) init(ipipDataFilePath string, config []byte) *groupManager {
+	s.ipipDataFilePath = ipipDataFilePath
 	s.servers = make(map[string]balanceGroup)
-	city, err := datx.NewCity(s.ipipDataFilePath)
-	if err == nil {
+	if city, err := datx.NewCity(s.ipipDataFilePath); err != nil {
+		log.Fatalf("Load ip database from %s failed: %s\n", s.ipipDataFilePath, err)
+	} else {
 		log.Printf("Load ip databse from %s.\n", s.ipipDataFilePath)
 		s.city = city
 	}
-	inputData, ok := input.(map[string]interface{})
-	if !ok {
-		log.Fatal("Group Manager init failed.")
+	if err := json.Unmarshal([]byte(config), s); err != nil {
+		log.Fatal("load config failed: ", err.Error())
 	}
-	if sInput, ok := inputData["Servers"]; ok {
-		s.serverInput = sInput.(map[string]interface{})
-	}
-	if gInput, ok := inputData["Groups"]; ok {
-		s.groupInput = gInput.(map[string]interface{})
-	}
-	for k := range s.serverInput {
+	for k := range s.Servers {
 		log.Printf("Construct server %s.\n", k)
 		s.get(k)
 	}
-	for k := range s.groupInput {
+	for k := range s.Groups {
 		log.Printf("Construct group %s.\n", k)
 		s.get(k)
 	}
@@ -238,52 +198,48 @@ func (s *groupManager) init(input interface{}) *groupManager {
 }
 
 func (s *groupManager) createServer(name string) balanceGroup {
-	data, ok := s.serverInput[name]
-	if !ok {
-		return nil
-	}
-	server := (&server{Name: name}).init(data)
-	if server != nil {
-		s.servers[name] = server
-	}
-	return s.servers[name]
-}
-
-func (s *groupManager) createGroup(name string) balanceGroup {
-	data, ok := s.groupInput[name]
-	if !ok {
-		return nil
-	}
-	group := (&group{Name: name}).init(data)
-	if group != nil {
-		s.servers[name] = group
-		group.constructGroup(s)
-	}
-	return s.servers[name]
-}
-
-func (s *groupManager) getByGroup(c echo.Context) balanceGroup {
-	groupCookie, err := c.Cookie("group")
-	if err != nil {
-		return nil
-	}
-	groupName := groupCookie.Value
-	if group, ok := s.servers[groupName]; ok {
-		return group
+	if config, ok := s.Servers[name]; ok {
+		server := (&server{}).init(name, config)
+		if server != nil {
+			s.servers[name] = server
+		}
+		return s.servers[name]
 	}
 	return nil
 }
 
-func (s *groupManager) getByIp(c echo.Context) balanceGroup {
+func (s *groupManager) createGroup(name string) balanceGroup {
+	if config, ok := s.Groups[name]; ok {
+		group := (&group{}).init(name, config)
+		if group != nil {
+			s.servers[name] = group
+			group.constructGroup(s)
+		}
+		return s.servers[name]
+	}
+	return nil
+}
+
+func (s *groupManager) getByGroup(c echo.Context) balanceGroup {
+	if groupCookie, err := c.Cookie("group"); err == nil {
+		groupName := groupCookie.Value
+		if group, ok := s.servers[groupName]; ok {
+			return group
+		}
+	}
+	return nil
+}
+
+func (s *groupManager) getByIP(c echo.Context) balanceGroup {
 	ip := c.RealIP()
-	location, err := s.city.FindLocation(ip)
-	if err != nil {
+	if location, err := s.city.FindLocation(ip); err != nil {
 		log.Println(err)
 		return nil
-	}
-	log.Printf("ip: %s,location: %s.\n", ip, location.Country)
-	if v := s.get(location.Country); v != nil {
-		return v
+	} else {
+		log.Printf("ip: %s,location: %s.\n", ip, location.Country)
+		if v := s.get(location.Country); v != nil {
+			return v
+		}
 	}
 	return nil
 }
@@ -292,10 +248,10 @@ func (s *groupManager) get(name string) balanceGroup {
 	if v, ok := s.servers[name]; ok {
 		return v
 	}
-	if _, ok := s.serverInput[name]; ok {
+	if _, ok := s.Servers[name]; ok {
 		return s.createServer(name)
 	}
-	if _, ok := s.groupInput[name]; ok {
+	if _, ok := s.Groups[name]; ok {
 		return s.createGroup(name)
 	}
 	return nil

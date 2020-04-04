@@ -20,7 +20,7 @@ func handler(c echo.Context) error {
 	var group balanceGroup
 	group = gm.getByGroup(c)
 	if group == nil {
-		group = gm.getByIp(c)
+		group = gm.getByIP(c)
 	}
 	if group == nil {
 		group = gm.get("main")
@@ -40,7 +40,15 @@ func handler(c echo.Context) error {
 			log.Printf("Request from [%s] to [%s] with cookie [%s] has been redirect to [%s]\n", c.RealIP(), c.Request().URL, cookie.Value, server.Name)
 		}
 	}
-	c.Redirect(server.RedirectType, fmt.Sprintf("%s%s", server.URL, c.Request().URL))
+	var redirectType int
+	if server.RedirectType != 0 {
+		redirectType = server.RedirectType
+	} else if gm.RedirectType != 0 {
+		redirectType = gm.RedirectType
+	} else {
+		redirectType = 307
+	}
+	c.Redirect(redirectType, fmt.Sprintf("%s%s", server.URL, c.Request().URL))
 	return nil
 }
 
@@ -68,10 +76,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	gm = &groupManager{ipipDataFilePath: *ipData}
-	input := make(map[string]interface{})
-	json.Unmarshal(data, &input)
-	gm.init(input)
+	gm = (&groupManager{}).init(*ipData, data)
 	go gm.watch()
 
 	e := echo.New()
