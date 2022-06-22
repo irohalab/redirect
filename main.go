@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"strconv"
 
 	"github.com/labstack/echo"
@@ -65,6 +66,25 @@ func status(c echo.Context) error {
 	return nil
 }
 
+func setCookie(c echo.Context) error {
+	group := c.Param("group")
+	c.SetCookie(&http.Cookie{
+		Name:   "group",
+		Value:  group,
+		MaxAge: 365 * 24 * 3600,
+	})
+	return nil
+}
+
+func delCookie(c echo.Context) error {
+	c.SetCookie(&http.Cookie{
+		Name:   "group",
+		Value:  "",
+		MaxAge: -1,
+	})
+	return nil
+}
+
 func main() {
 	path := flag.String("c", "./config.json", "Config Path.")
 	ipData := flag.String("d", "./data.ipx", "Ipp.net database.")
@@ -85,5 +105,7 @@ func main() {
 
 	e.GET("/*", handler)
 	e.POST("/*", status)
+	e.PUT("/:group", setCookie)
+	e.DELETE("/", delCookie)
 	e.Logger.Fatal(e.Start(":" + strconv.Itoa(*port)))
 }
