@@ -15,25 +15,45 @@ import (
 
 type balanceGroup interface {
 	getServer() *server
+	selectServer(options serverSelectionOptions) *server
 	getStatus() interface{}
 	watch()
+}
+
+type serverSelectionOptions struct {
+	excluded       map[string]struct{}
+	count          bool
+	selectableOnly bool
+}
+
+func (o serverSelectionOptions) isExcluded(name string) bool {
+	_, ok := o.excluded[name]
+	return ok
 }
 
 type server struct {
 	Name         string
 	URL          string
+	Label        string
+	Region       string
+	Selectable   bool
 	RedirectType int
 	Offline      bool
 	Check        bool
 	LastOnline   time.Time
 	Count        int64
+	mutex        sync.RWMutex
 }
 
 func (s *server) init(name string, config []byte) *server {
 	s.Name = name
 	s.Check = true
+	s.Selectable = true
 	if err := json.Unmarshal(config, s); err != nil {
 		log.Fatalf("init server %s failed, err: %s, config: %s\n", name, err.Error(), config)
+	}
+	if s.Label == "" {
+		s.Label = s.Name
 	}
 	log.Printf("Regist server %s success.\n", s.Name)
 	return s
@@ -45,8 +65,15 @@ func (s *server) watch() {
 			time.Sleep(10 * time.Second)
 			req, _ := http.NewRequest(http.MethodGet, s.URL+"/generate_204", nil)
 			req.Header.Set("Connection", "close")
-			if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusNoContent {
-				if s.Offline == false {
+			resp, err := http.DefaultClient.Do(req)
+			online := err == nil && resp != nil && resp.StatusCode == http.StatusNoContent
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			s.mutex.Lock()
+			wasOffline := s.Offline
+			if !online {
+				if !wasOffline {
 					if err != nil {
 						log.Println(err)
 					}
@@ -54,26 +81,69 @@ func (s *server) watch() {
 				}
 				s.Offline = true
 			} else {
-				if s.Offline == true {
+				if wasOffline {
 					log.Printf("[%s] back to Online.\n", s.Name)
 				}
 				s.Offline = false
 				s.LastOnline = time.Now()
 			}
+			s.mutex.Unlock()
 		}
 	}
 }
 
 func (s *server) getServer() *server {
-	if s.Offline {
+	return s.selectServer(serverSelectionOptions{count: true})
+}
+
+func (s *server) selectServer(options serverSelectionOptions) *server {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.Offline || options.isExcluded(s.Name) || (options.selectableOnly && !s.Selectable) {
 		return nil
 	}
-	s.Count++
+	if options.count {
+		s.Count++
+	}
 	return s
 }
 
 func (s *server) getStatus() interface{} {
-	return *s
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return struct {
+		Name         string
+		URL          string
+		RedirectType int
+		Offline      bool
+		Check        bool
+		LastOnline   time.Time
+		Count        int64
+	}{
+		Name:         s.Name,
+		URL:          s.URL,
+		RedirectType: s.RedirectType,
+		Offline:      s.Offline,
+		Check:        s.Check,
+		LastOnline:   s.LastOnline,
+		Count:        s.Count,
+	}
+}
+
+func (s *server) publicMetadata() backendMetadata {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	availability := "healthy"
+	if s.Offline {
+		availability = "offline"
+	}
+	return backendMetadata{
+		ID:           s.Name,
+		Label:        s.Label,
+		Region:       s.Region,
+		Availability: availability,
+		Selectable:   s.Selectable,
+	}
 }
 
 type serverWithWeight struct {
@@ -118,13 +188,17 @@ func (s *group) constructGroup(m *groupManager) {
 }
 
 func (s *group) getServer() *server {
+	return s.selectServer(serverSelectionOptions{count: true})
+}
+
+func (s *group) selectServer(options serverSelectionOptions) *server {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	switch s.Type {
 	case "fallback":
 		for _, v := range s.sortedWeight {
 			if t, ok := s.servers[v.Name]; ok {
-				if server := t.getServer(); server != nil {
+				if server := t.selectServer(options); server != nil {
 					return server
 				}
 			}
@@ -139,12 +213,17 @@ func (s *group) getServer() *server {
 			i := rand.Intn(len(s.Servers))
 			t := s.sortedWeight[i]
 			if rand.Float64()*maxWeight < t.Weight {
-				if server := s.servers[t.Name].getServer(); server != nil {
+				if server := s.servers[t.Name].selectServer(options); server != nil {
 					return server
 				}
 			}
 		}
-		return s.servers[s.sortedWeight[0].Name].getServer()
+		for _, weightedServer := range s.sortedWeight {
+			if server := s.servers[weightedServer.Name].selectServer(options); server != nil {
+				return server
+			}
+		}
+		return nil
 	}
 	return nil
 }
@@ -168,6 +247,7 @@ func (s *group) getStatus() interface{} {
 type groupManager struct {
 	Servers          map[string]json.RawMessage
 	Groups           map[string]json.RawMessage
+	Routing          routingConfig
 	servers          map[string]balanceGroup
 	ipipDataFilePath string
 	RedirectType     int
@@ -231,6 +311,9 @@ func (s *groupManager) getByGroup(c echo.Context) balanceGroup {
 }
 
 func (s *groupManager) getByIP(c echo.Context) balanceGroup {
+	if s.city == nil {
+		return nil
+	}
 	ip := c.RealIP()
 	if location, err := s.city.FindLocation(ip); err != nil {
 		log.Println(err)
@@ -255,6 +338,34 @@ func (s *groupManager) get(name string) balanceGroup {
 		return s.createGroup(name)
 	}
 	return nil
+}
+
+func (s *groupManager) getConcreteServer(name string) *server {
+	value := s.get(name)
+	server, ok := value.(*server)
+	if !ok {
+		return nil
+	}
+	return server
+}
+
+func (s *groupManager) selectRouteServer(c echo.Context, options serverSelectionOptions) (*server, string) {
+	if group := s.getByGroup(c); group != nil {
+		if selected := group.selectServer(options); selected != nil {
+			return selected, "cookie"
+		}
+	}
+	if group := s.getByIP(c); group != nil {
+		if selected := group.selectServer(options); selected != nil {
+			return selected, "country"
+		}
+	}
+	if group := s.get("main"); group != nil {
+		if selected := group.selectServer(options); selected != nil {
+			return selected, "main"
+		}
+	}
+	return nil, ""
 }
 
 func (s *groupManager) watch() {
