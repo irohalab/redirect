@@ -2,10 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,8 +22,14 @@ type balanceGroup interface {
 	getServer() *server
 	selectServer(options serverSelectionOptions) *server
 	getStatus() interface{}
-	watch()
 }
+
+const (
+	healthCheckInterval = 10 * time.Second
+	healthCheckTimeout  = 5 * time.Second
+)
+
+var healthCheckClient = &http.Client{Timeout: healthCheckTimeout}
 
 type serverSelectionOptions struct {
 	excluded       map[string]struct{}
@@ -52,6 +63,9 @@ func (s *server) init(name string, config []byte) *server {
 	if err := json.Unmarshal(config, s); err != nil {
 		log.Fatalf("init server %s failed, err: %s, config: %s\n", name, err.Error(), config)
 	}
+	if err := validateServerURL(s.URL); err != nil {
+		log.Fatalf("init server %s failed: %s\n", name, err)
+	}
 	if s.Label == "" {
 		s.Label = s.Name
 	}
@@ -60,36 +74,71 @@ func (s *server) init(name string, config []byte) *server {
 }
 
 func (s *server) watch() {
-	if s.Check {
-		for {
-			time.Sleep(10 * time.Second)
-			req, _ := http.NewRequest(http.MethodGet, s.URL+"/generate_204", nil)
-			req.Header.Set("Connection", "close")
-			resp, err := http.DefaultClient.Do(req)
-			online := err == nil && resp != nil && resp.StatusCode == http.StatusNoContent
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-			s.mutex.Lock()
-			wasOffline := s.Offline
-			if !online {
-				if !wasOffline {
-					if err != nil {
-						log.Println(err)
-					}
-					log.Printf("[%s] Offline.\n", s.Name)
-				}
-				s.Offline = true
-			} else {
-				if wasOffline {
-					log.Printf("[%s] back to Online.\n", s.Name)
-				}
-				s.Offline = false
-				s.LastOnline = time.Now()
-			}
-			s.mutex.Unlock()
-		}
+	if !s.Check {
+		return
 	}
+	for {
+		time.Sleep(healthCheckInterval)
+		online, err := s.checkHealth(healthCheckClient)
+		s.updateHealthStatus(online, err)
+	}
+}
+
+func (s *server) updateHealthStatus(online bool, checkErr error) {
+	s.mutex.Lock()
+	wasOffline := s.Offline
+	s.Offline = !online
+	if online {
+		s.LastOnline = time.Now()
+	}
+	s.mutex.Unlock()
+
+	if online && wasOffline {
+		log.Printf("[%s] back to Online.\n", s.Name)
+		return
+	}
+	if !online && !wasOffline {
+		if checkErr != nil {
+			log.Println(checkErr)
+		}
+		log.Printf("[%s] Offline.\n", s.Name)
+	}
+}
+
+func validateServerURL(value string) error {
+	if value == "" || strings.TrimSpace(value) != value {
+		return errors.New("server URL must not be empty or contain surrounding whitespace")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("parse server URL: %w", err)
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("server URL must contain an http or https scheme and host")
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(value, "#") {
+		return errors.New("server URL must not contain a query string or fragment")
+	}
+	return nil
+}
+
+func (s *server) checkHealth(client *http.Client) (bool, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(s.URL, "/")+"/generate_204", nil)
+	if err != nil {
+		return false, fmt.Errorf("create health check request: %w", err)
+	}
+	req.Header.Set("Connection", "close")
+	resp, err := client.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	if err != nil {
+		return false, fmt.Errorf("perform health check: %w", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		return false, fmt.Errorf("health check returned status %d", resp.StatusCode)
+	}
+	return true, nil
 }
 
 func (s *server) getServer() *server {
@@ -169,8 +218,10 @@ func (s *group) init(name string, config []byte) *group {
 	}
 	s.sortedWeight = make([]serverWithWeight, 0)
 	s.servers = make(map[string]balanceGroup)
+	s.totalWeight = 0
 	for k, v := range s.Servers {
 		s.sortedWeight = append(s.sortedWeight, serverWithWeight{k, v})
+		s.totalWeight += v
 	}
 	sort.Slice(s.sortedWeight, func(i, j int) bool { return s.sortedWeight[i].Weight > s.sortedWeight[j].Weight })
 	log.Printf("Regist group %s success. \n", s.Name)
@@ -228,8 +279,6 @@ func (s *group) selectServer(options serverSelectionOptions) *server {
 	return nil
 }
 
-func (s *group) watch() {}
-
 func (s *group) getStatus() interface{} {
 	server := make([]string, 0)
 	for k := range s.servers {
@@ -265,6 +314,9 @@ func (s *groupManager) init(ipipDataFilePath string, config []byte) *groupManage
 	}
 	if err := json.Unmarshal([]byte(config), s); err != nil {
 		log.Fatal("load config failed: ", err.Error())
+	}
+	if err := validateGroupConfigurations(s.Servers, s.Groups); err != nil {
+		log.Fatal("validate groups: ", err)
 	}
 	for k := range s.Servers {
 		log.Printf("Construct server %s.\n", k)
@@ -369,10 +421,77 @@ func (s *groupManager) selectRouteServer(c echo.Context, options serverSelection
 }
 
 func (s *groupManager) watch() {
-	wg := sync.WaitGroup{}
-	for _, v := range s.servers {
-		wg.Add(1)
-		go v.watch()
+	for _, value := range s.servers {
+		if backend, ok := value.(*server); ok {
+			go backend.watch()
+		}
 	}
-	wg.Wait()
+}
+
+type groupConfiguration struct {
+	Servers map[string]float64
+}
+
+func validateGroupConfigurations(serverConfigs map[string]json.RawMessage, groupConfigs map[string]json.RawMessage) error {
+	groups := make(map[string]groupConfiguration, len(groupConfigs))
+	for name, rawConfig := range groupConfigs {
+		if _, exists := serverConfigs[name]; exists {
+			return fmt.Errorf("name %q is configured as both a server and a group", name)
+		}
+		var config groupConfiguration
+		if err := json.Unmarshal(rawConfig, &config); err != nil {
+			return fmt.Errorf("decode group %q: %w", name, err)
+		}
+		for member, weight := range config.Servers {
+			if weight <= 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+				return fmt.Errorf("group %q member %q has invalid weight %v", name, member, weight)
+			}
+			if _, isServer := serverConfigs[member]; !isServer {
+				if _, isGroup := groupConfigs[member]; !isGroup {
+					return fmt.Errorf("group %q references unknown member %q", name, member)
+				}
+			}
+		}
+		groups[name] = config
+	}
+
+	states := make(map[string]uint8, len(groups))
+	path := make([]string, 0, len(groups))
+	var visit func(string) error
+	visit = func(name string) error {
+		states[name] = 1
+		path = append(path, name)
+		for member := range groups[name].Servers {
+			if _, isGroup := groups[member]; !isGroup {
+				continue
+			}
+			switch states[member] {
+			case 0:
+				if err := visit(member); err != nil {
+					return err
+				}
+			case 1:
+				cycleStart := 0
+				for index, pathMember := range path {
+					if pathMember == member {
+						cycleStart = index
+						break
+					}
+				}
+				cycle := append(append([]string(nil), path[cycleStart:]...), member)
+				return fmt.Errorf("group reference cycle: %s", strings.Join(cycle, " -> "))
+			}
+		}
+		path = path[:len(path)-1]
+		states[name] = 2
+		return nil
+	}
+	for name := range groups {
+		if states[name] == 0 {
+			if err := visit(name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -29,7 +29,7 @@ func main() {
 		log.Fatal("initialize routing: ", err)
 	}
 	application := newApplication(groups, routing)
-	go groups.watch()
+	groups.watch()
 
 	e := echo.New()
 	//e.Use(middleware.Logger())

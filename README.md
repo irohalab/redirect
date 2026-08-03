@@ -98,6 +98,11 @@ configuration:
 
 ### Server metadata
 
+Each server `URL` must use `http` or `https` and include a host. Query strings,
+fragments, empty URLs, and URLs with surrounding whitespace are rejected at
+startup. Enabled health checks request `<URL>/generate_204` every 10 seconds and
+time out after 5 seconds.
+
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `Label` | Server ID | Safe user-facing backend name. |
@@ -105,6 +110,10 @@ configuration:
 | `Selectable` | `true` | Whether the server may be listed or selected by the route API. |
 
 `URL` is never returned by the routing API.
+
+Group weights must be finite positive numbers. References to unknown members,
+duplicate server/group names, and cyclic group references are rejected at
+startup.
 
 ### Routing fields
 
