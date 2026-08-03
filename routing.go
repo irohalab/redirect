@@ -216,32 +216,63 @@ func (s *routingService) extractToken(rawResource string) (string, string, error
 }
 
 func (s *routingService) parseResource(rawResource string, enforcePrefix bool) (string, string, error) {
-	if len(rawResource) == 0 || len(rawResource) > maxRouteResourceLength {
-		return "", "", errors.New("routing resource has invalid length")
-	}
-	parsed, err := url.ParseRequestURI(rawResource)
-	if err != nil {
-		return "", "", fmt.Errorf("parse routing resource: %w", err)
-	}
-	if parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") {
-		return "", "", errors.New("routing resource must be an absolute path on this origin")
-	}
-	if enforcePrefix && !s.isAllowedResourcePath(parsed.Path) {
-		return "", "", errors.New("routing resource path is not allowed")
+	cleanResource, tokens, hasToken, tokenErr := removeRouteQueryParameterFromResource(rawResource, s.config.QueryParameter)
+	var token string
+	if hasToken {
+		if tokenErr != nil || len(tokens) != 1 || tokens[0] == "" {
+			tokenErr = errInvalidRouteToken
+		} else {
+			token = tokens[0]
+		}
 	}
 
-	cleanQuery, tokens, hasToken, tokenErr := removeRouteQueryParameter(parsed.RawQuery, s.config.QueryParameter)
+	// Remove the reserved parameter before all validation. Redirect handling uses
+	// cleanResource even when validation fails, so a malformed or oversized
+	// routing request can never forward its token to a backend.
+	if len(cleanResource) == 0 || len(cleanResource) > maxRouteResourceLength {
+		if tokenErr != nil {
+			return cleanResource, "", tokenErr
+		}
+		return cleanResource, token, errors.New("routing resource has invalid length")
+	}
+	parsed, err := url.ParseRequestURI(cleanResource)
+	if err != nil {
+		if tokenErr != nil {
+			return cleanResource, "", tokenErr
+		}
+		return cleanResource, token, fmt.Errorf("parse routing resource: %w", err)
+	}
+	if parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") {
+		return cleanResource, token, errors.New("routing resource must be an absolute path on this origin")
+	}
+	if enforcePrefix && (hasDotPathSegment(parsed.Path) || !s.isAllowedResourcePath(parsed.Path)) {
+		return cleanResource, token, errors.New("routing resource path is not allowed")
+	}
+
 	resource := parsed.EscapedPath()
-	if cleanQuery != "" {
-		resource += "?" + cleanQuery
+	if parsed.RawQuery != "" {
+		resource += "?" + parsed.RawQuery
 	}
 	if !hasToken {
 		return resource, "", nil
 	}
-	if tokenErr != nil || len(tokens) != 1 || tokens[0] == "" {
+	if tokenErr != nil {
 		return resource, "", errInvalidRouteToken
 	}
-	return resource, tokens[0], nil
+	return resource, token, nil
+}
+
+func removeRouteQueryParameterFromResource(rawResource string, parameterName string) (string, []string, bool, error) {
+	queryStart := strings.IndexByte(rawResource, '?')
+	if queryStart < 0 {
+		return rawResource, nil, false, nil
+	}
+	cleanQuery, values, found, err := removeRouteQueryParameter(rawResource[queryStart+1:], parameterName)
+	cleanResource := rawResource[:queryStart]
+	if cleanQuery != "" {
+		cleanResource += "?" + cleanQuery
+	}
+	return cleanResource, values, found, err
 }
 
 func removeRouteQueryParameter(rawQuery string, parameterName string) (string, []string, bool, error) {
@@ -279,6 +310,15 @@ func removeRouteQueryParameter(rawQuery string, parameterName string) (string, [
 func (s *routingService) isAllowedResourcePath(path string) bool {
 	for _, prefix := range s.config.AllowedResourcePrefixes {
 		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDotPathSegment(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "." || segment == ".." {
 			return true
 		}
 	}

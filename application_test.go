@@ -220,6 +220,73 @@ func TestInvalidAndExpiredRouteTokensFallBackWithoutLeaking(t *testing.T) {
 	}
 }
 
+func TestOverlongRouteRequestFallsBackWithoutLeakingToken(t *testing.T) {
+	routing := newTestRoutingService(t)
+	application := newApplication(newTestGroupManager(), routing)
+	e := echo.New()
+	registerRoutes(e, application)
+
+	playbackURL := "/video/bangumi/episode.mp4?padding=" +
+		strings.Repeat("a", maxRouteResourceLength) +
+		"&__mira_route=oversized-request-token"
+	request := httptest.NewRequest(http.MethodGet, playbackURL, nil)
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d; body: %s", recorder.Code, http.StatusTemporaryRedirect, recorder.Body.String())
+	}
+	location := recorder.Header().Get(echo.HeaderLocation)
+	if strings.Contains(location, routing.config.QueryParameter) || strings.Contains(location, "oversized-request-token") {
+		t.Fatalf("routing token leaked to fallback: %s", location)
+	}
+	if got := recorder.Header().Get("X-Mira-Route"); got != "fallback" {
+		t.Fatalf("X-Mira-Route = %q, want fallback", got)
+	}
+}
+
+func TestRouteTokenDoesNotCountTowardsResourceLengthLimit(t *testing.T) {
+	routing := newTestRoutingService(t)
+	application := newApplication(newTestGroupManager(), routing)
+	e := echo.New()
+	registerRoutes(e, application)
+
+	resourcePrefix := "/video/"
+	resource := resourcePrefix + strings.Repeat("a", maxRouteResourceLength-len(resourcePrefix))
+	token, _, err := routing.issueToken("secondary", resource)
+	if err != nil {
+		t.Fatalf("issue route token: %v", err)
+	}
+	playbackURL, err := routing.addToken(resource, token)
+	if err != nil {
+		t.Fatalf("create playback URL: %v", err)
+	}
+	if len(playbackURL) <= maxRouteResourceLength {
+		t.Fatalf("playback URL length = %d, want greater than %d", len(playbackURL), maxRouteResourceLength)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, playbackURL, nil)
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d; body: %s", recorder.Code, http.StatusTemporaryRedirect, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("X-Mira-Route"); got != "pinned" {
+		t.Fatalf("X-Mira-Route = %q, want pinned", got)
+	}
+	if got := recorder.Header().Get("X-Mira-Backend"); got != "secondary" {
+		t.Fatalf("X-Mira-Backend = %q, want secondary", got)
+	}
+	location := recorder.Header().Get(echo.HeaderLocation)
+	if location != "https://secondary.example"+resource {
+		t.Fatalf("Location = %q", location)
+	}
+	if strings.Contains(location, routing.config.QueryParameter) {
+		t.Fatalf("routing token leaked to backend: %s", location)
+	}
+}
+
 func TestRoutingAPICORSAndRateLimit(t *testing.T) {
 	routing := newTestRoutingService(t)
 	routing.config.AllowedOrigins = []string{"https://mira.example"}

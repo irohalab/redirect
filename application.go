@@ -128,9 +128,7 @@ func (a *application) redirect(c echo.Context) error {
 
 	if a.routing != nil {
 		cleanResource, token, extractErr := a.routing.extractToken(resource)
-		if cleanResource != "" {
-			resource = cleanResource
-		}
+		resource = cleanResource
 		if token != "" || errors.Is(extractErr, errInvalidRouteToken) {
 			selectedRoute = "fallback"
 			if extractErr == nil {

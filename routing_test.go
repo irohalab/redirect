@@ -77,3 +77,29 @@ func TestRoutingTokenIsBoundToResource(t *testing.T) {
 		t.Fatal("expired token verified")
 	}
 }
+
+func TestRoutingResourceRejectsDotPathSegments(t *testing.T) {
+	routing, err := newRoutingServiceWithKeys(routingConfig{
+		AllowedResourcePrefixes: []string{"/video/", "/pic/"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create routing service: %v", err)
+	}
+
+	testCases := []string{
+		"/video/../private/file.mp4",
+		"/video/./episode.mp4",
+		"/video/%2e%2e/private/file.mp4",
+		"/video/segment/%2E/episode.mp4",
+		"/video%2f..%2fprivate/file.mp4",
+	}
+	for _, resource := range testCases {
+		if _, err := routing.normalizeResource(resource); err == nil {
+			t.Errorf("normalizeResource(%q) accepted a dot path segment", resource)
+		}
+	}
+
+	if _, err := routing.normalizeResource("/video/bangumi/episode.mp4"); err != nil {
+		t.Fatalf("valid routing resource was rejected: %v", err)
+	}
+}

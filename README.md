@@ -234,9 +234,10 @@ Example response:
 ```
 
 Route requests accept only same-origin absolute paths under an allowed prefix;
-they do not fetch a submitted URL. Unknown JSON fields, multiple JSON values,
-oversized bodies, invalid preference modes, and excessive exclusions are
-rejected.
+paths containing `.` or `..` segments are rejected, including percent-encoded
+forms. Route requests do not fetch a submitted URL. Unknown JSON fields,
+multiple JSON values, oversized bodies, invalid preference modes, and excessive
+exclusions are rejected.
 
 ## Token-aware redirect behavior
 
