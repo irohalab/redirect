@@ -132,9 +132,10 @@ startup.
 
 ### How to fill in `Routing`
 
-The example below uses comments to explain every value for the `suki.moe`
-deployment. Standard JSON does not support comments, so remove the `// ...`
-comments before putting this block in `config.json`.
+The example below uses reserved example domains so it is safe to copy into
+public documentation. Replace them with the real addresses for your deployment.
+Standard JSON does not support comments, so remove the `// ...` comments before
+putting this block in `config.json`.
 
 ```jsonc
 "Routing": {
@@ -169,13 +170,13 @@ comments before putting this block in `config.json`.
   // This is the public address that browsers use to reach redirect.
   // Include only https:// and the domain. Do not add /video/, /pic/, or a
   // trailing path. redirect uses it to build the playbackUrl in API responses.
-  "PublicOrigin": "https://suki.moe",
+  "PublicOrigin": "https://media.example.com",
 
   // These are the website addresses allowed to call the routing API in a
   // browser. Write each as https:// plus its domain, with no path.
-  // suki.moe is listed explicitly here because Mira UI runs at this address.
+  // mira.example.com represents the website where Mira UI runs.
   "AllowedOrigins": [
-    "https://suki.moe"
+    "https://mira.example.com"
   ],
 
   // redirect will issue signed routes only for URLs starting with these paths.
@@ -204,9 +205,9 @@ The same block without comments, ready for `config.json`, is:
   "SigningKeyEnvironments": {
     "2026-08": "MIRA_ROUTE_SIGNING_KEY_2026_08"
   },
-  "PublicOrigin": "https://suki.moe",
+  "PublicOrigin": "https://media.example.com",
   "AllowedOrigins": [
-    "https://suki.moe"
+    "https://mira.example.com"
   ],
   "AllowedResourcePrefixes": [
     "/video/",
