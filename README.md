@@ -130,6 +130,101 @@ startup.
 | `AllowedResourcePrefixes` | `/video/`, `/pic/` | Resource paths for which routes may be issued. |
 | `RequestsPerMinute` | `120` | Combined route API limit per direct network peer. |
 
+### How to fill in `Routing`
+
+The example below uses reserved example domains so it is safe to copy into
+public documentation. Replace them with the real addresses for your deployment.
+Standard JSON does not support comments, so remove the `// ...` comments before
+putting this block in `config.json`.
+
+```jsonc
+"Routing": {
+  // true turns on the two routing API endpoints and signed route URLs.
+  // Use false, or remove the whole Routing block, to keep only the old behavior.
+  "Enabled": true,
+
+  // This is the query-string name added to a video or image URL.
+  // Clients and redirect must use the same name. Usually, leave this unchanged.
+  "QueryParameter": "__mira_route",
+
+  // For the first 24 hours, clients can treat this route as a recent choice.
+  // This does not stop a video that is already playing after 24 hours.
+  "FreshTTL": "24h",
+
+  // The signed route can be accepted for at most 168 hours (7 days).
+  // After that, redirect ignores it and chooses a backend normally.
+  "MaxTTL": "168h",
+
+  // This is a name for the key currently used to sign new routes.
+  // It is not the secret key. Choose a name that helps identify the key,
+  // such as the year and month when it was created.
+  "ActiveSigningKeyID": "2026-08",
+
+  // The left side must match ActiveSigningKeyID.
+  // The right side is the name of an environment variable on the server.
+  // The environment variable contains the real secret; config.json does not.
+  "SigningKeyEnvironments": {
+    "2026-08": "MIRA_ROUTE_SIGNING_KEY_2026_08"
+  },
+
+  // This is the public address that browsers use to reach redirect.
+  // Include only https:// and the domain. Do not add /video/, /pic/, or a
+  // trailing path. redirect uses it to build the playbackUrl in API responses.
+  "PublicOrigin": "https://media.example.com",
+
+  // These are the website addresses allowed to call the routing API in a
+  // browser. Write each as https:// plus its domain, with no path.
+  // mira.example.com represents the website where Mira UI runs.
+  "AllowedOrigins": [
+    "https://mira.example.com"
+  ],
+
+  // redirect will issue signed routes only for URLs starting with these paths.
+  // Keep both entries when redirect serves both videos and images.
+  "AllowedResourcePrefixes": [
+    "/video/",
+    "/pic/"
+  ],
+
+  // Allow this many routing API requests per minute for each network address
+  // that redirect sees. 120 is a reasonable starting value. If all requests
+  // arrive through one reverse proxy, they currently share this limit.
+  "RequestsPerMinute": 120
+}
+```
+
+The same block without comments, ready for `config.json`, is:
+
+```json
+"Routing": {
+  "Enabled": true,
+  "QueryParameter": "__mira_route",
+  "FreshTTL": "24h",
+  "MaxTTL": "168h",
+  "ActiveSigningKeyID": "2026-08",
+  "SigningKeyEnvironments": {
+    "2026-08": "MIRA_ROUTE_SIGNING_KEY_2026_08"
+  },
+  "PublicOrigin": "https://media.example.com",
+  "AllowedOrigins": [
+    "https://mira.example.com"
+  ],
+  "AllowedResourcePrefixes": [
+    "/video/",
+    "/pic/"
+  ],
+  "RequestsPerMinute": 120
+}
+```
+
+Only three parts normally need deployment-specific choices:
+
+1. Choose the key name in `ActiveSigningKeyID`, for example `2026-08`.
+2. Choose the environment-variable name in `SigningKeyEnvironments` and set
+   that variable before starting `redirect`.
+3. Replace `PublicOrigin` and `AllowedOrigins` if the public redirect address or
+   Mira UI website address changes.
+
 `PublicOrigin` and every `AllowedOrigins` value must contain only an `http` or
 `https` scheme and host. Paths, query strings, credentials, and fragments are
 rejected at startup.
